@@ -26,9 +26,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Matrix;
 import android.graphics.Paint;
-import android.graphics.Bitmap.Config;
 import android.text.TextUtils;
 import android.util.Xml.Encoding;
 import android.util.Base64;
@@ -157,7 +155,11 @@ public class BluetoothPrinter extends CordovaPlugin {
             try {
                 String msg = args.getString(0);
                 Integer align = Integer.parseInt(args.getString(1));
-                printBase64(callbackContext, msg, align);
+                Integer printerWidthDots = 576;
+                if (args.length() > 2 && !args.isNull(2)) {
+                    printerWidthDots = Integer.parseInt(args.getString(2));
+                }
+                printBase64(callbackContext, msg, align, printerWidthDots);
             } catch (IOException e) {
                 Log.e(LOG_TAG, e.getMessage());
                 e.printStackTrace();
@@ -655,49 +657,49 @@ public class BluetoothPrinter extends CordovaPlugin {
     }
 
     // This will send data to bluetooth printer
-    boolean printBase64(CallbackContext callbackContext, String msg, Integer align) throws IOException {
+    boolean printBase64(CallbackContext callbackContext, String msg, Integer align, Integer printerWidthDots)
+            throws IOException {
         try {
+            String pureBase64Encoded;
+            int commaPosition = msg.indexOf(",");
 
-            final String encodedString = msg;
-            final String pureBase64Encoded = encodedString.substring(encodedString.indexOf(",") + 1);
-            final byte[] decodedBytes = Base64.decode(pureBase64Encoded, Base64.DEFAULT);
-
-            Bitmap decodedBitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
-
-            bitmap = decodedBitmap;
-            int mWidth = bitmap.getWidth();
-            int mHeight = bitmap.getHeight();
-
-            bitmap = resizeImage(bitmap, 48 * 12, mHeight);
-
-            byte[] bt = decodeBitmapBase64(bitmap);
-
-            // not work
-            Log.d(LOG_TAG, "SWITCH ALIGN BASE64 -> " + align);
-            switch (align) {
-            case 0:
-                mmOutputStream.write(ESC_ALIGN_LEFT);
-                mmOutputStream.write(bt);
-                break;
-            case 1:
-                mmOutputStream.write(ESC_ALIGN_CENTER);
-                mmOutputStream.write(bt);
-                break;
-            case 2:
-                mmOutputStream.write(ESC_ALIGN_RIGHT);
-                mmOutputStream.write(bt);
-                break;
+            if (commaPosition >= 0) {
+                pureBase64Encoded = msg.substring(commaPosition + 1);
+            } else {
+                pureBase64Encoded = msg;
             }
-            // tell the user data were sent
-            Log.d(LOG_TAG, "PRINT BASE64 SEND");
-            callbackContext.success("PRINT BASE64 SEND");
+
+            byte[] decodedBytes = Base64.decode(pureBase64Encoded, Base64.DEFAULT);
+            Bitmap sourceBitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
+
+            if (sourceBitmap == null) {
+                callbackContext.error("Base64 tidak dapat diubah menjadi bitmap");
+                return false;
+            }
+
+            if (printerWidthDots == null || printerWidthDots <= 0) {
+                printerWidthDots = 576;
+            }
+
+            Bitmap printBitmap = prepareBitmapForAlignment(sourceBitmap, printerWidthDots, align);
+            byte[] rasterCommand = decodeBitmapBase64(printBitmap);
+
+            mmOutputStream.write(ESC_ALIGN_LEFT);
+            mmOutputStream.write(rasterCommand);
+            mmOutputStream.write(ESC_ALIGN_LEFT);
+            mmOutputStream.flush();
+
+            Log.d(LOG_TAG, "PRINT BASE64 SENT");
+            callbackContext.success("PRINT BASE64 SENT");
             return true;
 
         } catch (Exception e) {
-            String errMsg = e.getMessage();
-            Log.e(LOG_TAG, errMsg);
-            e.printStackTrace();
-            callbackContext.error(errMsg);
+            String errorMessage = e.getMessage();
+            if (errorMessage == null) {
+                errorMessage = "Gagal mencetak gambar Base64";
+            }
+            Log.e(LOG_TAG, errorMessage, e);
+            callbackContext.error(errorMessage);
         }
         return false;
     }
@@ -867,27 +869,50 @@ public class BluetoothPrinter extends CordovaPlugin {
         return false;
     }
 
-    // New implementation
-    private static Bitmap resizeImage(Bitmap bitmap, int w, int h) {
-        Bitmap BitmapOrg = bitmap;
-        int width = BitmapOrg.getWidth();
-        int height = BitmapOrg.getHeight();
+    private static Bitmap prepareBitmapForAlignment(Bitmap source, int printerWidth, int align) {
+        int sourceWidth = source.getWidth();
+        int sourceHeight = source.getHeight();
 
-        if (width > w) {
-            float scaleWidth = ((float) w) / width;
-            float scaleHeight = ((float) h) / height + 24;
-            Matrix matrix = new Matrix();
-            matrix.postScale(scaleWidth, scaleWidth);
-            Bitmap resizedBitmap = Bitmap.createBitmap(BitmapOrg, 0, 0, width, height, matrix, true);
-            return resizedBitmap;
-        } else {
-            Bitmap resizedBitmap = Bitmap.createBitmap(w, height + 24, Config.RGB_565);
-            Canvas canvas = new Canvas(resizedBitmap);
-            Paint paint = new Paint();
-            canvas.drawColor(Color.WHITE);
-            canvas.drawBitmap(bitmap, (w - width) / 2, 0, paint);
-            return resizedBitmap;
+        float scale = 1.0f;
+        if (sourceWidth > printerWidth) {
+            scale = (float) printerWidth / (float) sourceWidth;
         }
+
+        int scaledWidth = Math.max(1, Math.round(sourceWidth * scale));
+        int scaledHeight = Math.max(1, Math.round(sourceHeight * scale));
+
+        Bitmap scaledBitmap;
+        if (scaledWidth == sourceWidth && scaledHeight == sourceHeight) {
+            scaledBitmap = source;
+        } else {
+            scaledBitmap = Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true);
+        }
+
+        int outputWidth = align == 0 ? scaledWidth : printerWidth;
+        Bitmap outputBitmap = Bitmap.createBitmap(outputWidth, scaledHeight, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(outputBitmap);
+        canvas.drawColor(Color.WHITE);
+
+        int x = 0;
+        switch (align) {
+        case 1:
+            x = (printerWidth - scaledWidth) / 2;
+            break;
+        case 2:
+            x = printerWidth - scaledWidth;
+            break;
+        case 0:
+        default:
+            x = 0;
+            break;
+        }
+
+        Paint paint = new Paint();
+        paint.setAntiAlias(false);
+        paint.setFilterBitmap(true);
+        canvas.drawBitmap(scaledBitmap, x, 0, paint);
+
+        return outputBitmap;
     }
 
     public static byte[] decodeBitmapBase64(Bitmap bmp) {

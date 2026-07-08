@@ -171,8 +171,6 @@ In android tests with /storage/emulated/0/Pictures/myfolder/myimage.jpg - size m
 
 ### Print image from base64 with align
 
-- with align still in tests not work alignment)
-
 ```javascript
 BTPrinter.printBase64(function(data){
     console.log("Success");
@@ -180,8 +178,11 @@ BTPrinter.printBase64(function(data){
 },function(err){
     console.log("Error");
     console.log(err);
-}, "Image Base64 String",'0');//base64 string, align
+}, "Image Base64 String",'0', 576);//base64 string, align, printer width dots
 ```
+
+Use `384` for many 58mm printers and `576` for many 80mm printers. If omitted,
+printer width defaults to `576`.
 
 ### Print title with size and align
 
